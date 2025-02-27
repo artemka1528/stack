@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <script>
+        class TaskManager {
+            constructor(maxConcurrentTasks = 2) {
+                this.maxConcurrentTasks = maxConcurrentTasks;
+                this.taskQueue = [];
+                this.runningTasks = new Map();
+                this.taskStatus = new Map();
+                this.taskDependencies = new Map();
+                this.nextTaskId = 1;
+                this.isExecuting = false;
+            }
+
+            addTask(task, priority, dependencies = [], timeout = null) {
+                const taskId = `task${this.nextTaskId++}`;
+                this.taskQueue.push({
+                    taskId,
+                    task,
+                    priority,
+                    dependencies,
+                    timeout
+                });
+                this.taskStatus.set(taskId, 'pending');
+                this.taskDependencies.set(taskId, dependencies);
+
+            }
+
+            async executeTasks() {
+
+                this.taskQueue.sort((a, b) => b.priority - a.priority);
+                const taskPromises = new Map();
+
+                while (this.taskQueue.length > 0 || this.runningTasks.size > 0) {
+                    if (this.runningTasks.size < this.maxConcurrentTasks) {
+
+                        const nextTaskIndex = this.taskQueue.findIndex(task =>
+                            task.dependencies.every(dep => this.taskStatus.get(dep) === 'completed')
+                        );
+
+                        if (nextTaskIndex !== -1) {
+                            const {
+                                taskId,
+                                task,
+                                timeout
+                            } = this.taskQueue.splice(nextTaskIndex, 1)[0];
+                            this.taskStatus.set(taskId, 'running');
+
+                            const taskPromise = new Promise(async(resolve, reject) => {
+                                let timeoutTriggered = false;
+                                const timer = timeout ? setTimeout(() => {
+                                    timeoutTriggered = true
+                                }, timeout) : null;
+
+                                try {
+                                    await task();
+                                    clearTimeout(timer);
+                                    if (timeoutTriggered) {
+                                        this.taskStatus.set(taskId, 'timeout');
+                                        for (const taskQueueItems of this.taskQueue) {
+                                            for (const taskQueueItem of taskQueueItems.dependencies) {
+                                                if (taskQueueItem === taskId) {
+                                                    this.cancelTask(taskQueueItems.taskId)
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        this.taskStatus.set(taskId, 'completed');
+                                    }
+                                    resolve();
+                                } catch (error) {
+                                    clearTimeout(timer);
+                                    this.taskStatus.set(taskId, 'failed');
+
+                                    for (const taskQueueItems of this.taskQueue) {
+                                        for (const taskQueueItem of taskQueueItems.dependencies) {
+                                            if (taskQueueItem === taskId) {
+                                                this.cancelTask(taskQueueItems.taskId)
+                                            }
+                                        }
+                                    }
+                                    resolve();
+                                    console.error(error);
+
+                                } finally {
+                                    this.runningTasks.delete(taskId);
+                                }
+                            });
+
+                            this.runningTasks.set(taskId, taskPromise);
+                            taskPromises.set(taskId, taskPromise);
+                        }
+                    }
+                    await Promise.race([...this.runningTasks.values()]);
+                }
+                await Promise.allSettled(taskPromises.values());
+            }
+
+            getStatus() {
+                return Object.fromEntries(this.taskStatus);
+            }
+
+            cancelTask(taskId) {
+                if (this.taskStatus.has(taskId)) {
+                    this.taskStatus.set(taskId, 'cancelled');
+                    for (const [id, dependencies] of this.taskDependencies) {
+                        if (dependencies.includes(taskId)) {
+                            this.cancelTask(id);
+                        }
+                    }
+                }
+            }
+
+            changePriority(taskId, newPriority) {
+                const task = this.taskQueue.find(t => t.taskId === taskId);
+                if (task) {
+                    task.priority = newPriority;
+                    this.taskQueue.sort((a, b) => b.priority - a.priority);
+                }
+            }
+        }
+
+        // Пример использования
+        const taskManager = new TaskManager(2);
+        // Добавление задач 
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 1');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log('Задача 1 завершена');
+        }, 2, []);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 2');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log('Задача 2 завершена');
+        }, 1, ['task1']);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 3');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('Задача 3 завершена');
+        }, 3, []);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 4');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            console.log('Задача 4 завершена');
+        }, 1, ['task2', 'task3']);
+        // Выполнение задач 
+        taskManager.executeTasks().then(() => {
+            console.log('Все задачи выполнены');
+            // Получение и вывод статуса всех задач после выполнения 
+            console.log('Статус задач после выполнения:', taskManager.getStatus());
+        }).catch(error => {
+            console.error('Ошибка при выполнении задач:', error);
+        });
+        // // Пример использования getStatus во время выполнения задач 
+        const intervalId = setInterval(() => {
+            const status = taskManager.getStatus();
+            console.log('Текущий статус задач:', status);
+            // Остановка интервала, когда все задачи будут выполнены 
+            if (Object.values(status).every(s => s === 'completed' || s === 'failed' || s === 'cancelled' || s === 'timeout')) {
+                clearInterval(intervalId);
+            }
+        }, 500);
+        // Пример добавления и выполнения дополнительных задач 
+        // Пример добавления и выполнения дополнительных задач 
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 5');
+            await new Promise((_, reject) => setTimeout(() => reject(new Error('Ошибка в задаче 5')), 1500));
+        }, 2, []);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 6');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log('Задача 6 завершена');
+        }, 1, []);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 7');
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            console.log('Задача 7 завершена');
+        }, 2, ['task5']);
+        taskManager.addTask(async() => {
+            console.log('Выполнение задачи 8');
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            console.log('Задача 8 завершена');
+        }, 2, [], 1000);
+
+        // // Выполнение дополнительных задач 
+        taskManager.executeTasks().then(() => {
+            console.log('Все дополнительные задачи выполнены');
+            // Получение и вывод статуса всех задач после выполнения дополнительных задач 
+            console.log('Статус задач после выполнения дополнительных задач:', taskManager.getStatus());
+        }).catch(error => {
+            console.error('Ошибка при выполнении дополнительных задач:', error);
+        });
+    </script>
+</body>
+
+</html>
